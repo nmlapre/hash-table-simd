@@ -30,16 +30,17 @@ int main() {
     {18,3,4.4},
   };
   for (const Data& val : values) {
-    hs._insert(val);
-    hs._print();
+    hs.insert(val);
+    hs.print();
   }
   for (const Data& val : values) {
-    assert(hs._contains(val));
+    assert(hs.contains(val));
   }
   for (const Data& val : values) {
-    hs._remove(val);
-    hs._print();
-    assert(!hs._contains(val));
+    hs.remove(val);
+    hs.print();
+    assert(!hs.contains(val));
   }
   return 0;
 }
+

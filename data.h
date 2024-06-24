@@ -22,3 +22,4 @@ struct Data {
     printf("x: %d, y: %d, z: %lf", x, y, z);
   }
 };
+

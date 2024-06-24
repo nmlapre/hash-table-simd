@@ -11,7 +11,7 @@ BOOST_TTI_HAS_MEMBER_FUNCTION(print);
 enum class Control : uint8_t {
   Empty   = 0b1111'1111,
   Removed = 0b1000'0000,
-  // Full = 0xb0...'....
+  // Full = 0b0...'....
 };
 
 template<typename V>
@@ -20,8 +20,7 @@ struct HashSet {
   static constexpr size_t GroupSize = 16;
 
   HashSet(size_t initialCapacity = 4)
-    : _table(initialCapacity)
-    , _count(0)
+    : _count(0)
   {
     _groupCount = 1;
     const size_t size = _groupCount * GroupSize + _groupCount * sizeof(V) * GroupSize;
@@ -30,30 +29,17 @@ struct HashSet {
   }
 
   bool insert(V v) {
-    const bool inserted = insert(std::move(v), _table);
-    if (inserted) {
-      _count++;
-    }
-    if (_count > size_t(_table.size() * 0.8)) {
-      rehash();
-    }
-    return inserted;
-  }
-
-  // METADATA INSERT
-  bool _insert(V v) {
     const bool inserted = _insert(std::move(v), _data);
     if (inserted) {
       _count++;
     }
     if (_count > size_t(_groupCount * GroupSize * 0.8)) {
-      _rehash();
+      rehash();
     }
     return inserted;
   }
 
-  // METADATA CONTAINS
-  bool _contains(V const& v) const {
+  bool contains(V const& v) const {
     const size_t hash = v.hash();
     const uint8_t mostSignificantBits = uint8_t(hash >> 57);
     const Control ctrl{mostSignificantBits};
@@ -78,24 +64,7 @@ struct HashSet {
     return false;
   }
 
-  bool contains(V const& v) const {
-    size_t index = v.hash() % _table.size();
-    const size_t indexInitial = index;
-    while (true) {
-      auto& entry = _table[index];
-      if (entry.has_value() && entry == v) {
-        return true;
-      }
-      index = (index + 1) % _table.size();
-      if (index == indexInitial) {
-        return false;
-      }
-    }
-    return false;
-  }
-
-  // METADATA REMOVE
-  bool _remove(V const& v) {
+  bool remove(V const& v) {
     const size_t hash = v.hash();
     const uint8_t mostSignificantBits = uint8_t(hash >> 57);
     const Control ctrl{mostSignificantBits};
@@ -125,26 +94,7 @@ struct HashSet {
     return false;
   }
 
-  bool remove(V const& v) {
-    size_t index = v.hash() % _table.size();
-    const size_t indexInitial = index;
-    while (true) {
-      auto& entry = _table[index];
-      if (entry.has_value() && entry == v) {
-        entry.reset();
-        _count--;
-        return true;
-      }
-      index = (index + 1) % _table.size();
-      if (index == indexInitial) {
-        return false;
-      }
-    }
-    return false;
-  }
-
-  // METADATA PRINT
-  void _print() const {
+  void print() const {
     printf("Printing contents of hash table:\n");
     printf("group count: %zu, entry count: %zu\n", _groupCount, _count);
     size_t i = 0;
@@ -159,34 +109,18 @@ struct HashSet {
       if (hasValue) {
         if constexpr (HasPrint) {
           reinterpret_cast<V*>(&_data[
-            _groupCount * GroupSize +              // metadata
-            i * sizeof(V)
+            _groupCount * GroupSize + // skip metadata
+            i * sizeof(V)             // skip to index
           ])->print();
         } else {
-          std::cout << "[no printer]";
+          std::cout << "[no print function]";
         }
       }
       std::cout << std::endl;
     }
   }
 
-  void print() const {
-    printf("Printing contents of hash table:\n");
-    for (size_t i = 0; i < _table.size(); ++i) {
-      printf("index: %zu: ", i);
-      if (_table[i].has_value()) {
-        if constexpr (HasPrint) {
-          _table[i]->print();
-        } else {
-          printf("Value!");
-        }
-      }
-      printf("\n");
-    }
-  }
-
 private:
-  std::vector<std::optional<V>> _table;
   size_t _count;
   std::unique_ptr<std::byte[]> _data;
   size_t _groupCount;
@@ -194,8 +128,7 @@ private:
   static constexpr bool HasPrint =
     has_member_function_print<V const, void>::value;
 
-  // METADATA REHASH
-  void _rehash() {
+  void rehash() {
     _groupCount++;
     const size_t size = _groupCount * GroupSize + _groupCount * sizeof(V) * GroupSize;
     std::unique_ptr<std::byte[]> newData = std::make_unique<std::byte[]>(size);
@@ -214,15 +147,6 @@ private:
     _data = std::move(newData);
   }
 
-  void rehash() {
-    std::vector<std::optional<V>> newTable(_table.size() * 2);
-    for (auto& entry : _table) {
-      insert(std::move(entry.value()), newTable);
-    }
-    _table = std::move(newTable);
-  }
-
-  // METADATA INSERT
   bool _insert(V v, std::unique_ptr<std::byte[]>& data) {
     const size_t hash = v.hash();
     const uint8_t mostSignificantBits = uint8_t(hash >> 57);
@@ -249,26 +173,5 @@ private:
     }
     return false;
   } 
-
-  bool insert(V v, std::vector<std::optional<V>>& destination) {
-    size_t index = v.hash() % destination.size();
-    const size_t indexInitial = index;
-    while (true) {
-      auto& entry = destination[index];
-      if (!entry.has_value()) {
-        entry = std::move(v);
-        return true;
-      }
-      if (entry == v) {
-        return false;
-      }
-      index = (index + 1) % destination.size();
-      if (index == indexInitial) {
-        rehash();
-        insert(std::move(v), destination);
-        return true;
-      }
-    }
-    return false;
-  }
 };
+
