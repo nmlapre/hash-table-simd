@@ -15,7 +15,7 @@ enum class Control : uint8_t {
   // Full = 0b0...'....
 };
 
-template<typename V>
+template<typename V, size_t GrowthFactor = 2>
 struct HashSet {
 
   static constexpr size_t GroupSize = 16;
@@ -101,7 +101,7 @@ private:
 
   void _rehash() {
     const size_t prevGroupCount = _groupCount;
-    _groupCount++;
+    _groupCount *= GrowthFactor;
     const size_t size = _groupCount * GroupSize + _groupCount * sizeof(V) * GroupSize;
     std::unique_ptr<std::byte[]> newData = std::make_unique<std::byte[]>(size);
     std::memset(newData.get(), 0xFF, _groupCount * GroupSize);
@@ -144,7 +144,7 @@ private:
     const uint8_t mostSignificantBits = uint8_t(hash >> 57);
     const Control ctrl{mostSignificantBits};
     // This works because _groupCount is a power of 2
-    //                  hash &  _groupCount
+    //                  hash %  _groupCount
     size_t groupIndex = hash & (_groupCount - 1);
     const size_t initialGroupIndex = groupIndex;
     while (true) {
@@ -183,14 +183,14 @@ private:
       }
     }
     return false;
-  } 
+  }
 
   bool _find(V const& v, Control*& ctrlOut, V*& entryOut) const {
     const size_t hash = v.hash();
     const uint8_t mostSignificantBits = uint8_t(hash >> 57);
     const Control ctrl{mostSignificantBits};
     // This works because _groupCount is a power of 2
-    //                  hash &  _groupCount
+    //                  hash %  _groupCount
     size_t groupIndex = hash & (_groupCount - 1);
     const size_t initialGroupIndex = groupIndex;
     while (true) {
@@ -222,14 +222,22 @@ private:
         // adjust the bitmask by zeroing out the index we just tried
         matches &= (matches - 1); // bit twiddling hack on trailing 0s
       }
-      // TODO:
-      // check whether there are any empty slots in this group
-      // if there are any, then we can stop looking now. it would have been here
-      // this implementation is wrong. need to check against Control::Empty
-      //matches = _mm_movemask_epi8(cmpVec);
-      //if (_mm_popcnt_u32(matches) < 16) { // likely!
-      //  return false;
-      //}
+      // We didn't find it in this group. Check whether there are any Empty
+      // entries in this group. If there are any, then we can stop looking now
+      // since the entry we're looking for would have been here. If we just
+      // checked against the highest bit for emptiness (i.e., Empty or Removed),
+      // we might see "Removed" and think of it as empty. However, just because
+      // there isn't data there doesn't mean that what we're searching for would
+      // have been there. Rather, it could have been inserted later in the table
+      // while that Removed slot was full. Then, the slot could become Removed
+      // before we process this Find operation. So, we need to see a bonafide
+      // Empty to stop. Luckily, this is pretty likely.
+      ctrlVec = _mm_set1_epi8(uint8_t(Control::Empty));
+      cmpVec = _mm_cmpeq_epi8(groupVec, ctrlVec);
+      matches = _mm_movemask_epi8(cmpVec);
+      if (matches != 0) { // likely!
+        return false;
+      }
 
       // This works because _groupCount is a power of 2
       //           (groupIndex + 1) %  _groupCount;
