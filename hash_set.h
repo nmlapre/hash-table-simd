@@ -5,6 +5,7 @@
 #include <memory>
 #include <cinttypes>
 #include <boost/tti/has_member_function.hpp>
+#include <immintrin.h>
 
 BOOST_TTI_HAS_MEMBER_FUNCTION(print);
 
@@ -21,77 +22,47 @@ struct HashSet {
 
   HashSet(size_t initialCapacity = 4)
     : _count(0)
+    , _groupCount(1)
+    , _data(std::make_unique<std::byte[]>(
+          (_groupCount * GroupSize) * (1 + sizeof(V))
+       /* [        capacity       ]   [control+value] */
+        ))
   {
-    _groupCount = 1;
-    const size_t size = _groupCount * GroupSize + _groupCount * sizeof(V) * GroupSize;
-    _data = std::make_unique<std::byte[]>(size);
     std::memset(_data.get(), 0xFF, GroupSize);
   }
 
   bool insert(V v) {
-    const bool inserted = _insert(std::move(v), _data);
-    if (inserted) {
-      _count++;
-    }
     if (_count > size_t(_groupCount * GroupSize * 0.8)) {
-      rehash();
+      _rehash();
     }
+    const bool inserted = _insert(std::move(v), _data);
+    assert(inserted);
+    _count++;
     return inserted;
   }
 
   bool contains(V const& v) const {
-    const size_t hash = v.hash();
-    const uint8_t mostSignificantBits = uint8_t(hash >> 57);
-    const Control ctrl{mostSignificantBits};
-    size_t groupIndex = v.hash() % _groupCount;
-    const size_t initialGroupIndex = groupIndex;
-    while (true) {
-      for (size_t i = 0; i < GroupSize; ++i) {
-        if (Control{_data[groupIndex * GroupSize + i]} == ctrl &&
-            *reinterpret_cast<V*>(&_data[
-              _groupCount * GroupSize +              // metadata
-              groupIndex * GroupSize * sizeof(V) +   // relevant group in values
-              sizeof(V) * i])                        // relevant entry in value group
-            == v) {
-          return true;
-        }
-      }
-      groupIndex = (groupIndex + 1) % _groupCount;
-      if (groupIndex == initialGroupIndex) {
-        return false;
-      }
-    }
-    return false;
+    Control* ctrl;
+    V* entry;
+    return _find(v, ctrl, entry);
   }
 
   bool remove(V const& v) {
-    const size_t hash = v.hash();
-    const uint8_t mostSignificantBits = uint8_t(hash >> 57);
-    const Control ctrl{mostSignificantBits};
-    size_t groupIndex = v.hash() % _groupCount;
-    const size_t initialGroupIndex = groupIndex;
-    while (true) {
-      for (size_t i = 0; i < GroupSize; ++i) {
-        if (Control{_data[groupIndex * GroupSize + i]} == ctrl &&
-            *reinterpret_cast<V*>(&_data[
-              _groupCount * GroupSize +              // metadata
-              groupIndex * GroupSize * sizeof(V) +   // relevant group in values
-              sizeof(V) * i])                        // relevant entry in value group
-            == v) {
-          // remove it
-          _data[groupIndex * GroupSize + i] = std::byte{Control::Removed};
-          _count--;
-          // note: don't actually have to do anything to the entry
-          // could memzero it in debug?
-          return true;
-        }
-      }
-      groupIndex = (groupIndex + 1) % _groupCount;
-      if (groupIndex == initialGroupIndex) {
-        return false;
-      }
+    Control* ctrl;
+    V* entry;
+    const bool found = _find(v, ctrl, entry);
+    if (!found) {
+      return false;
     }
-    return false;
+
+    _count--;
+    *ctrl = Control::Removed;
+    // We don't actually have to do anything to the entry. Just leave it!
+    // Zero it out in debug just for debugging help.
+#if DEBUG
+    memset(entry, 0x00, sizeof(V));
+#endif
+    return true;
   }
 
   void print() const {
@@ -122,28 +93,49 @@ struct HashSet {
 
 private:
   size_t _count;
-  std::unique_ptr<std::byte[]> _data;
   size_t _groupCount;
+  std::unique_ptr<std::byte[]> _data;
 
   static constexpr bool HasPrint =
     has_member_function_print<V const, void>::value;
 
-  void rehash() {
+  void _rehash() {
+    const size_t prevGroupCount = _groupCount;
     _groupCount++;
     const size_t size = _groupCount * GroupSize + _groupCount * sizeof(V) * GroupSize;
     std::unique_ptr<std::byte[]> newData = std::make_unique<std::byte[]>(size);
     std::memset(newData.get(), 0xFF, _groupCount * GroupSize);
 
-    // walk through all of the metadata and rehash to new data
-    const size_t prevGroupCount = _groupCount - 1;
-    for (size_t i = 0; i < prevGroupCount * GroupSize; ++i) {
-      if (uint8_t(_data[i]) & 0b1000'0000) {
-        continue;
+    // walk through metadata 16 slots at a time
+    for (size_t groupIndex = 0; groupIndex < prevGroupCount; ++groupIndex) {
+      // get the 16 byte chunk to examine
+      void* group = _data.get() + (groupIndex * GroupSize);
+      __m128i groupVec = _mm_loadu_si128(reinterpret_cast<__m128i*>(group));
+      // broadcast the single-byte control sequence to a 16-byte vector
+      __m128i ctrlVec = _mm_set1_epi8(uint8_t(0b1000'0000));
+      // AND each byte with the ctrlVec to discard all but the interesting high bit
+      __m128i maskedVec = _mm_and_si128(groupVec, ctrlVec);
+      // check whether each byte equals 0x00
+      // this verifies that the original highest bit was 0
+      __m128i zero = _mm_setzero_si128();
+      __m128i cmpVec = _mm_cmpeq_epi8(maskedVec, zero);
+      // get the position of matching bytes
+      // [MAX:16] are 0, [15:0] may be 0 or 1
+      int matches = _mm_movemask_epi8(cmpVec);
+      // search through the matches bitmask
+      while (matches != 0) {
+        // Trailing Zero Count - find the first set bit
+        unsigned int index = _tzcnt_u32(matches);
+        // get the slot of the associated control byte
+        const size_t slotOffset = _getSlotOffset(prevGroupCount, groupIndex, index);
+        V* value = reinterpret_cast<V*>(_data.get() + slotOffset);
+        _insert(std::move(*value), newData);
+
+        // adjust the bitmask by zeroing out the index we just tried
+        matches &= (matches - 1); // bit twiddling hack on trailing 0s
       }
-      // TODO: std::launder?
-      V* value = reinterpret_cast<V*>(&_data[prevGroupCount * GroupSize + sizeof(V) * i]);
-      _insert(std::move(*value), newData);
     }
+
     _data = std::move(newData);
   }
 
@@ -151,27 +143,115 @@ private:
     const size_t hash = v.hash();
     const uint8_t mostSignificantBits = uint8_t(hash >> 57);
     const Control ctrl{mostSignificantBits};
-    size_t groupIndex = v.hash() % _groupCount;
+    // This works because _groupCount is a power of 2
+    //                  hash &  _groupCount
+    size_t groupIndex = hash & (_groupCount - 1);
     const size_t initialGroupIndex = groupIndex;
     while (true) {
-      for (size_t i = 0; i < GroupSize; ++i) {
-        if (uint8_t(data[groupIndex * GroupSize + i]) & 0b1000'0000) {
-          data[groupIndex * GroupSize + i] = std::byte{ctrl};
-          V* slot = reinterpret_cast<V*>(&data[
-              _groupCount * GroupSize +
-              groupIndex * GroupSize * sizeof(V) +
-              sizeof(V) * i
-          ]);
-          *slot = std::move(v);
-          return true;
-        }
+      // first, get the 16 bytes to examine (the group)
+      void* group = data.get() + (groupIndex * GroupSize);
+      __m128i groupVec = _mm_loadu_si128(reinterpret_cast<__m128i*>(group));
+      // broadcast the single-byte control sequence to a 16-byte vector
+      __m128i ctrlVec = _mm_set1_epi8(uint8_t(0b1000'0000));
+      // AND each byte with the ctrlVec to discard all but the interesting high bit
+      __m128i maskedVec = _mm_and_si128(groupVec, ctrlVec);
+      // check whether each byte equals each other byte.
+      // output 0xFF to result vec in place of each matching byte.
+      __m128i cmpVec = _mm_cmpeq_epi8(ctrlVec, maskedVec);
+      // get the position of matching bytes. likely 0 or 1 bytes match
+      // [MAX:16] are 0, [15:0] may be 0 or 1
+      int matches = _mm_movemask_epi8(cmpVec);
+      // search through the matches bitmask
+      if (matches != 0) {
+        // Trailing Zero Count - find the first set bit
+        unsigned int index = _tzcnt_u32(matches);
+        // get the slot of the associated control byte
+        const size_t slotOffset = _getSlotOffset(_groupCount, groupIndex, index);
+        V* slot = reinterpret_cast<V*>(data.get() + slotOffset);
+        *slot = std::move(v);
+        Control* ctrlSlot = reinterpret_cast<Control*>(
+          reinterpret_cast<std::byte*>(group) + index);
+        *ctrlSlot = ctrl;
+        return true;
       }
-      groupIndex = (groupIndex + 1) % _groupCount;
+
+      // This works because _groupCount is a power of 2
+      //           (groupIndex + 1) %  _groupCount;
+      groupIndex = (groupIndex + 1) & (_groupCount - 1);
       if (groupIndex == initialGroupIndex) {
         return false;
       }
     }
     return false;
   } 
+
+  bool _find(V const& v, Control*& ctrlOut, V*& entryOut) const {
+    const size_t hash = v.hash();
+    const uint8_t mostSignificantBits = uint8_t(hash >> 57);
+    const Control ctrl{mostSignificantBits};
+    // This works because _groupCount is a power of 2
+    //                  hash &  _groupCount
+    size_t groupIndex = hash & (_groupCount - 1);
+    const size_t initialGroupIndex = groupIndex;
+    while (true) {
+      // first, get the 16 bytes to examine (the group)
+      void* group = _data.get() + (groupIndex * GroupSize);
+      __m128i groupVec = _mm_loadu_si128(reinterpret_cast<__m128i*>(group));
+      // broadcast the single-byte control sequence to a 16-byte vector
+      __m128i ctrlVec = _mm_set1_epi8(uint8_t(ctrl));
+      // check whether each byte equals each other byte.
+      // output 0xFF to result vec in place of each matching byte.
+      __m128i cmpVec = _mm_cmpeq_epi8(groupVec, ctrlVec);
+      // get the position of matching bytes. likely 0 or 1 bytes match
+      // [MAX:16] are 0, [15:0] may be 0 or 1
+      int matches = _mm_movemask_epi8(cmpVec);
+      // search through the matches bitmask
+      while (matches != 0) {
+        // Trailing Zero Count - find the first set bit
+        unsigned int index = _tzcnt_u32(matches);
+        // try index's associated value for equality
+        const size_t slotOffset = _getSlotOffset(_groupCount, groupIndex, index);
+        V* candidate = reinterpret_cast<V*>(_data.get() + slotOffset);
+        // this comparison is very likely to succeed
+        if (*candidate == v) {
+          ctrlOut = reinterpret_cast<Control*>(
+              reinterpret_cast<std::byte*>(group) + index);
+          entryOut = candidate;
+          return true;
+        }
+        // adjust the bitmask by zeroing out the index we just tried
+        matches &= (matches - 1); // bit twiddling hack on trailing 0s
+      }
+      // TODO:
+      // check whether there are any empty slots in this group
+      // if there are any, then we can stop looking now. it would have been here
+      // this implementation is wrong. need to check against Control::Empty
+      //matches = _mm_movemask_epi8(cmpVec);
+      //if (_mm_popcnt_u32(matches) < 16) { // likely!
+      //  return false;
+      //}
+
+      // This works because _groupCount is a power of 2
+      //           (groupIndex + 1) %  _groupCount;
+      groupIndex = (groupIndex + 1) & (_groupCount - 1);
+      if (groupIndex == initialGroupIndex) {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  // Get the byte offset in the data array.
+  //   groupCount:    how many groups are in the data
+  //   groupIndex:    which group are we interested in
+  //   entryIndex:    which entry in the group are we interested in
+  size_t _getSlotOffset(size_t groupCount, size_t groupIndex, size_t entryIndex) const {
+    // Form with 1 fewer multiplication, addition
+    return GroupSize * (groupCount + groupIndex * sizeof(V)) + sizeof(V) * entryIndex;
+    //return
+    //  groupCount * GroupSize +             // metadata
+    //  groupIndex * GroupSize * sizeof(V) + // relevant group in slots
+    //  sizeof(V) * entryIndex;              // relevant entry in slot group
+  }
 };
 

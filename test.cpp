@@ -36,8 +36,9 @@ int main() {
   for (const Data& val : values) {
     assert(hs.contains(val));
   }
+  assert(!hs.contains({-1, -1, -1.0}));
   for (const Data& val : values) {
-    hs.remove(val);
+    assert(hs.remove(val));
     hs.print();
     assert(!hs.contains(val));
   }
