@@ -5,7 +5,13 @@
 #include <memory>
 #include <cinttypes>
 #include <boost/tti/has_member_function.hpp>
-#include <immintrin.h>
+#include <bit>
+
+#ifdef __x86_64__
+  #include <immintrin.h>
+#else
+  #include "sse2neon.h"
+#endif
 
 BOOST_TTI_HAS_MEMBER_FUNCTION(print);
 
@@ -47,7 +53,7 @@ struct HashSet {
     return _find(v, ctrl, entry);
   }
 
-  bool remove(V const& v) {
+  bool erase(V const& v) {
     Control* ctrl;
     V* entry;
     const bool found = _find(v, ctrl, entry);
@@ -57,9 +63,15 @@ struct HashSet {
 
     _count--;
     *ctrl = Control::Removed;
-    // We don't actually have to do anything to the entry. Just leave it!
-    // Zero it out in debug just for debugging help.
+
+    // We don't actually have to do anything to the erased entry if it's
+    // trivially destructible. Otherwise, run the destructor.
+    if constexpr (!std::is_trivially_destructible_v<V>) {
+      entry->~V();
+    }
+
 #if DEBUG
+    // Zero memory out in debug just for debugging help.
     memset(entry, 0x00, sizeof(V));
 #endif
     return true;
@@ -125,7 +137,7 @@ private:
       // search through the matches bitmask
       while (matches != 0) {
         // Trailing Zero Count - find the first set bit
-        unsigned int index = _tzcnt_u32(matches);
+        int index = std::countr_zero(static_cast<unsigned int>(matches));
         // get the slot of the associated control byte
         const size_t slotOffset = _getSlotOffset(prevGroupCount, groupIndex, index);
         V* value = reinterpret_cast<V*>(_data.get() + slotOffset);
@@ -164,7 +176,7 @@ private:
       // search through the matches bitmask
       if (matches != 0) {
         // Trailing Zero Count - find the first set bit
-        unsigned int index = _tzcnt_u32(matches);
+        int index = std::countr_zero(static_cast<unsigned int>(matches));
         // get the slot of the associated control byte
         const size_t slotOffset = _getSlotOffset(_groupCount, groupIndex, index);
         V* slot = reinterpret_cast<V*>(data.get() + slotOffset);
@@ -208,7 +220,7 @@ private:
       // search through the matches bitmask
       while (matches != 0) {
         // Trailing Zero Count - find the first set bit
-        unsigned int index = _tzcnt_u32(matches);
+        int index = std::countr_zero(static_cast<unsigned int>(matches));
         // try index's associated value for equality
         const size_t slotOffset = _getSlotOffset(_groupCount, groupIndex, index);
         V* candidate = reinterpret_cast<V*>(_data.get() + slotOffset);

@@ -10,7 +10,7 @@ struct Data {
     return other.x == x && other.y == y && other.z == z;
   }
 
-  size_t hash() const {
+  size_t hash() const noexcept {
     size_t result = 0;
     boost::hash_combine(result, x);
     boost::hash_combine(result, y);
@@ -20,6 +20,15 @@ struct Data {
 
   void print() const {
     printf("x: %d, y: %d, z: %lf", x, y, z);
+  }
+};
+
+template<>
+struct std::hash<Data>
+{
+  std::size_t operator()(const Data& s) const noexcept
+  {
+    return s.hash();
   }
 };
 

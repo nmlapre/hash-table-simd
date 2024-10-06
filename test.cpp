@@ -2,45 +2,76 @@
 #include "hash_set.h"
 #include <cassert>
 
-int main() {
-  HashSet<Data> hs;
-  const Data values[] = {
-    {2,3,4.0},
-    {2,3,4.1},
-    {2,3,4.2},
-    {2,3,4.3},
-    {2,3,4.4},
+#include <array>
+#include <chrono>
+#include <unordered_set>
+#include <vector>
 
-    {3,3,4.0},
-    {4,3,4.1},
-    {5,3,4.2},
-    {6,3,4.3},
-    {7,3,4.4},
-    {8,3,4.0},
-    {9,3,4.1},
-    {0,3,4.2},
-    {10,3,4.3},
-    {11,3,4.4},
-    {12,3,4.4},
-    {13,3,4.4},
-    {14,3,4.4},
-    {15,3,4.4},
-    {16,3,4.4},
-    {17,3,4.4},
-    {18,3,4.4},
-  };
+struct Timer {
+  Timer(const char* message)
+   : _message(message)
+   , _startTime(std::chrono::system_clock::now())
+  { }
+
+  ~Timer() {
+    const auto endTime = std::chrono::system_clock::now();
+    const auto elapsed = endTime - _startTime;
+    std::cout << _message << ": " << elapsed << "\n";
+  }
+
+  const char* _message;
+  std::chrono::time_point<std::chrono::system_clock> _startTime;
+};
+
+std::vector<Data> GenerateDataset(size_t size) {
+  std::vector<Data> result{};
+  result.resize(size);
+  for (size_t i = 0; i < size; ++i) {
+    result[i] = {rand(), rand(), rand() / 3.14};
+  }
+  return result;
+}
+
+template <typename Container>
+void RunTestCode(Container& container, std::vector<Data> const& values) {
   for (const Data& val : values) {
-    hs.insert(val);
-    hs.print();
+    container.insert(val);
   }
   for (const Data& val : values) {
-    assert(hs.contains(val));
+    assert(container.contains(val));
   }
-  assert(!hs.contains({-1, -1, -1.0}));
   for (const Data& val : values) {
-    assert(hs.remove(val));
-    hs.print();
-    assert(!hs.contains(val));
+    assert(container.erase(val));
+    assert(!container.contains(val));
+  }
+}
+
+// TODO: variations of testing:
+//   - randomized insert/contains/erase
+//   - larger data
+//   - data with non-trivial destructor
+template <typename Container>
+void RandomizedTest(Container& container, std::vector<Data> const& values) {
+  rand();
+}
+
+int main(int argc, char** argv) {
+  const size_t datasetSize = std::stoi(argv[1]);
+  const auto values = GenerateDataset(datasetSize);
+  srand(time(0));
+
+  // Flat HashSet implementation
+  {
+    Timer timer{"Flat HashSet implementation"};
+    HashSet<Data> hs;
+    RunTestCode(hs, values);
+  }
+
+  // std::unordered_set implementation
+  {
+    Timer timer{"std::unordered_set implementation"};
+    std::unordered_set<Data> hs;
+    RunTestCode(hs, values);
   }
   return 0;
 }
