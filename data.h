@@ -18,17 +18,10 @@ struct Data {
     return result;
   }
 
-  void print() const {
-    printf("x: %d, y: %d, z: %lf", x, y, z);
-  }
+  void print() const { printf("x: %d, y: %d, z: %lf", x, y, z); }
 };
 
-template<>
-struct std::hash<Data>
-{
-  std::size_t operator()(const Data& s) const noexcept
-  {
-    return s.hash();
-  }
+template <>
+struct std::hash<Data> {
+  std::size_t operator()(Data const& s) const noexcept { return s.hash(); }
 };
-

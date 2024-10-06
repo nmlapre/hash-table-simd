@@ -1,0 +1,28 @@
+BasedOnStyle: Google
+
+IndentWidth: 2
+UseTab: Never
+PointerAlignment: Left
+DerivePointerAlignment: false
+QualifierAlignment: Right # east const
+#AlignConsecutiveAssignments: true
+
+# Brace style (K&R style)
+BraceWrapping:
+  AfterClass: false
+  AfterControlStatement: false
+  AfterEnum: false
+  AfterFunction: false
+  AfterNamespace: false
+  AfterStruct: false
+  AfterUnion: false
+  BeforeCatch: false
+  BeforeElse: false
+  IndentBraces: false
+  SplitEmptyFunction: false
+  SplitEmptyRecord: false
+  SplitEmptyNamespace: false
+
+# Other preferences
+ColumnLimit: 80
+
